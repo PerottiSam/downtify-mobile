@@ -1,59 +1,59 @@
 # Downtify Mobile
 
-App React Native (Expo + TypeScript) per un server [Downtify](https://downtify.henriquesebastiao.com).
-Segue il *Mobile Client Contract* ufficiale (API v1): **verifica → accesso/abbinamento → sync → streaming → report**.
+A React Native app (Expo + TypeScript) for a [Downtify](https://github.com/henriquesebastiao/downtify) server.
 
-## Avvio
+It follows the official _Mobile Client Contract_ (API v1): **verification → authentication/pairing → sync → streaming → reporting**.
+
+## Getting Started
 
 ```bash
 npm install
-npx expo install --fix      # allinea le versioni dei pacchetti alla tua SDK Expo
-npx expo start              # scansiona il QR con Expo Go, oppure premi a / i
+npx expo install --fix      # Align package versions with your Expo SDK
+npx expo start              # Scan the QR code with Expo Go, or press a / i
 ```
 
-Il telefono deve raggiungere il server (stessa rete Wi-Fi, VPN o indirizzo https pubblico).
-Per una build di produzione: `npx expo prebuild` oppure EAS Build. `app.json` abilita già
-HTTP in chiaro (Android `usesCleartextTraffic`, iOS ATS) perché Downtify di solito gira su LAN in http.
-Se usi solo https, rimuovi quelle due impostazioni.
+Your phone must be able to reach the server (same Wi-Fi network, VPN, or public HTTPS address).
 
-## Funzioni
+For a production build: `npx expo prebuild` or EAS Build.
 
-| Area | Cosa fa | Endpoint |
-|---|---|---|
-| Connessione | Verifica prodotto/versione API del server | `GET /api/server/info` |
-| Accesso | Utente + password, oppure codice di abbinamento (`XXXX-XXXX`), oppure nessun account | `POST /api/auth/token`, `POST /api/auth/pair` |
-| Libreria | Sync incrementale con cursore + cache locale; ricerca, Brani / Album / Artisti | `GET /api/v1/library?since=` |
-| Player | Streaming con URL firmati, qualità originale/AAC/Opus, repeat, testi sincronizzati, lock screen | `POST /api/v1/sign`, `/api/v1/tracks/{id}/stream`, `/lyrics` |
-| Preferiti | Like con aggiornamento ottimistico | `GET/PUT /api/v1/likes` |
-| Playlist | Proprie e condivise (sola lettura) | `GET /api/v1/playlists` |
-| Cerca e scarica | Ricerca YouTube Music, incolla link Spotify/YouTube/Deezer/SoundCloud, classifica globale | `/api/songs/search`, `/api/url/resolve`, `/api/discover/chart`, `POST /api/download/batch` |
-| Download | Coda del server con avanzamento in tempo reale | `GET /api/queue` + WebSocket `/api/ws` |
-| Statistiche | Ascolti dopo metà brano, "sta ascoltando" ogni 30 s | `/api/discover/listens`, `/api/activity/playback` |
+`app.json` already enables cleartext HTTP traffic (Android `usesCleartextTraffic`, iOS ATS) because Downtify typically runs over HTTP on a local network.
 
-Un dispositivo abbinato non può cambiare impostazioni, cancellare file o gestire dispositivi (il server risponde 403):
-l'app non offre quelle azioni.
+If you only use HTTPS, remove those two settings.
 
-## Struttura
+## Features
 
+| Area              | Description                                                                                        | Endpoint                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Connection        | Verifies the server's product and API version                                                      | `GET /api/server/info`                                                                     |
+| Authentication    | Username + password, pairing code (`XXXX-XXXX`), or no account                                     | `POST /api/auth/token`, `POST /api/auth/pair`                                              |
+| Library           | Incremental sync with cursor + local cache; search, Tracks / Albums / Artists                      | `GET /api/v1/library?since=`                                                               |
+| Player            | Streaming with signed URLs, original/AAC/Opus quality, repeat, synced lyrics, lock screen controls | `POST /api/v1/sign`, `/api/v1/tracks/{id}/stream`, `/lyrics`                               |
+| Favorites         | Likes with optimistic updates                                                                      | `GET/PUT /api/v1/likes`                                                                    |
+| Playlists         | Personal and shared playlists (read-only)                                                          | `GET /api/v1/playlists`                                                                    |
+| Search & Download | YouTube Music search, paste Spotify/YouTube/Deezer/SoundCloud links, global chart                  | `/api/songs/search`, `/api/url/resolve`, `/api/discover/chart`, `POST /api/download/batch` |
+| Downloads         | Server-side queue with real-time progress                                                          | `GET /api/queue` + WebSocket `/api/ws`                                                     |
+| Statistics        | Play counts after listening to more than half a track; "now listening" updates every 30 seconds    | `/api/discover/listens`, `/api/activity/playback`                                          |
+
+A paired device cannot change settings, delete files, or manage devices (the server responds with `403`).
+
+The app does not provide these actions.
+
+## Project Structure
+
+```text
+App.tsx                      provider + navigation (auth / app)
+src/api/client.ts            typed REST client, errors, signed URLs
+src/store/session.tsx         server, token (SecureStore), user
+src/store/data.tsx            library, likes, playlists, queue, WebSocket
+src/store/player.tsx          expo-audio, playback queue, listening reports
+src/navigation/               tabs + stack + player modal
+src/screens/                  Connect, SignIn, Library, Search, Playlists, TrackList, Downloads, More, Player
+src/components/               Cover, TrackRow, MiniPlayer, ui
 ```
-App.tsx                      provider + navigazione (auth / app)
-src/api/client.ts            client REST tipizzato, errori, URL firmati
-src/store/session.tsx        server, token (SecureStore), utente
-src/store/data.tsx           libreria, like, playlist, coda, WebSocket
-src/store/player.tsx         expo-audio, coda di riproduzione, report ascolti
-src/navigation/              tab + stack + modale player
-src/screens/                 Connect, SignIn, Library, Search, Playlists, TrackList, Downloads, More, Player
-src/components/              Cover, TrackRow, MiniPlayer, ui
-```
 
-## Da sapere / prossimi passi
+## Notes / Roadmap
 
-- **Non ancora fatti**: ascolto offline (scaricare i file con `Range` e chiave `id`), scoperta automatica mDNS
-  (`_downtify._tcp`, serve `react-native-zeroconf` e una dev build), scansione QR di abbinamento (`expo-camera`),
-  podcast, Cast, coda degli ascolti fatti offline.
-- Le sezioni dei JSON di ricerca/classifica sono lette in modo tollerante (`name`/`title`, `artist`/`artists`):
-  la documentazione non ne elenca tutti i campi, quindi se il tuo server usa nomi diversi basta ritoccare
-  `songTitle`/`songArtist` in `src/utils.ts`.
-- Se l'audio in background non parte su iOS/Android, serve una dev build (Expo Go ha limiti sul background).
-- Ho scritto il codice senza poterlo eseguire: lancia `npm run typecheck` e correggi eventuali discrepanze
-  con la versione di `expo-audio` che installi.
+- **Not implemented yet:** offline listening (downloading files using `Range` and the `id` key), automatic mDNS discovery (`_downtify._tcp`; requires `react-native-zeroconf` and a development build), QR code pairing (`expo-camera`), podcasts, Cast, and a queue for plays made offline.
+- Search and chart JSON responses are parsed flexibly (`name`/`title`, `artist`/`artists`). The documentation does not list every field, so if your server uses different names, simply adjust `songTitle`/`songArtist` in `src/utils.ts`.
+- If background audio does not work on iOS/Android, a development build is required (Expo Go has limitations with background execution).
+- The code was written without being executed. Run `npm run typecheck` and fix any discrepancies with the version of `expo-audio` you install.
