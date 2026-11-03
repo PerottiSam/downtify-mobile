@@ -50,10 +50,3 @@ src/navigation/               tabs + stack + player modal
 src/screens/                  Connect, SignIn, Library, Search, Playlists, TrackList, Downloads, More, Player
 src/components/               Cover, TrackRow, MiniPlayer, ui
 ```
-
-## Notes / Roadmap
-
-- **Not implemented yet:** offline listening (downloading files using `Range` and the `id` key), automatic mDNS discovery (`_downtify._tcp`; requires `react-native-zeroconf` and a development build), QR code pairing (`expo-camera`), podcasts, Cast, and a queue for plays made offline.
-- Search and chart JSON responses are parsed flexibly (`name`/`title`, `artist`/`artists`). The documentation does not list every field, so if your server uses different names, simply adjust `songTitle`/`songArtist` in `src/utils.ts`.
-- If background audio does not work on iOS/Android, a development build is required (Expo Go has limitations with background execution).
-- The code was written without being executed. Run `npm run typecheck` and fix any discrepancies with the version of `expo-audio` you install.
