@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Downtify",
+    "slug": "downtify-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b0c0e",
+    "scheme": "downtify",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.downtify.mobile",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
+    },
+    "android": {
+      "package": "app.downtify.mobile",
+      "permissions": [
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "WAKE_LOCK"
+      ]
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-audio",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "expo-status-bar"
+    ]
+  }
+}
