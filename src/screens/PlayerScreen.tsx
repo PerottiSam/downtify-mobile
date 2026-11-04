@@ -17,7 +17,7 @@ function LyricsView({ trackId }: { trackId: string }) {
   const [synced, setSynced] = useState<LrcLine[]>([]);
   const [plain, setPlain] = useState('');
   const [loading, setLoading] = useState(true);
-  const scroller = useRef<ScrollView>(null);
+  const scroller = useRef<React.ComponentRef<typeof ScrollView>>(null);
   const ys = useRef<number[]>([]);
 
   useEffect(() => {
