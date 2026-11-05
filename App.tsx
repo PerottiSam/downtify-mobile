@@ -1,13 +1,13 @@
-import { DarkTheme, NavigationContainer } from '@react-navigation/native';
-import { StatusBar } from 'expo-status-bar';
-import React from 'react';
-import { ActivityIndicator, View } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { AppNavigator, AuthNavigator } from './src/navigation';
-import { DataProvider } from './src/store/data';
-import { PlayerProvider } from './src/store/player';
-import { SessionProvider, useSession } from './src/store/session';
-import { colors } from './src/theme';
+import { DarkTheme, NavigationContainer } from "@react-navigation/native";
+import { StatusBar } from "expo-status-bar";
+import React from "react";
+import { ActivityIndicator, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { AppNavigator, AuthNavigator } from "./src/navigation";
+import { DataProvider } from "./src/store/data";
+import { PlayerProvider } from "./src/store/player";
+import { SessionProvider, useSession } from "./src/store/session";
+import { colors } from "./src/theme";
 
 const navTheme = {
   ...DarkTheme,
@@ -24,9 +24,16 @@ const navTheme = {
 function Root() {
   const { status } = useSession();
 
-  if (status === 'loading') {
+  if (status === "loading") {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}>
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
         <ActivityIndicator color={colors.accent} />
       </View>
     );
@@ -34,7 +41,7 @@ function Root() {
 
   return (
     <NavigationContainer theme={navTheme}>
-      {status === 'signedIn' ? (
+      {status === "signedIn" ? (
         <DataProvider>
           <PlayerProvider>
             <AppNavigator />

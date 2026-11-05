@@ -1,5 +1,5 @@
-import { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { ServerInfo } from "../api/client";
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { ServerInfo } from '../api/client';
 
 export type AuthParams = {
   Connect: undefined;
@@ -15,12 +15,7 @@ export type RootParams = {
 /** Stack interno di ogni tab: le pagine di dettaglio si aprono QUI, sotto la tab bar. */
 export type TabStackParams = {
   Home: undefined;
-  TrackList: {
-    title: string;
-    subtitle?: string;
-    trackIds: string[];
-    coverTrackId?: string;
-  };
+  TrackList: { title: string; subtitle?: string; trackIds: string[]; coverTrackId?: string };
 };
 
 export type Nav = NativeStackNavigationProp<TabStackParams>;

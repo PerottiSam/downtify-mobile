@@ -1,6 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import {
+  AudioPlaylist,
+  AudioPlaylistStatus,
+  createAudioPlaylist,
+  requestNotificationPermissionsAsync,
+  setAudioModeAsync,
+} from 'expo-audio';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform } from 'react-native';
 import { Track } from '../api/client';
 import { uuid } from '../utils';
 import { useSession } from './session';
@@ -15,6 +22,22 @@ export const QUALITIES: Record<QualityId, { label: string; format?: string; bitr
 };
 
 const QUALITY_KEY = 'downtify.quality';
+
+/**
+ * Il player nativo (AudioPlaylist) ha SOLO una finestra della coda: così i pulsanti
+ * "precedente/successivo" dello schermo bloccato e della notifica sono gestiti dal sistema,
+ * anche con l'app in background, senza passare da JavaScript.
+ */
+const BACK_WINDOW = 10; // brani precedenti caricati davanti al brano scelto
+const CHUNK = 100; // brani caricati in avanti per volta
+const REFILL_AT = 20; // quando ne restano meno di così, si aggiunge il blocco successivo
+
+const LOCK_OPTIONS = {
+  showNextTrack: true,
+  showPreviousTrack: true,
+  showSeekBackward: false,
+  showSeekForward: false,
+};
 
 export interface PlayerApi {
   queue: Track[];
@@ -49,167 +72,118 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [quality, setQualityState] = useState<QualityId>('original');
   const [progress, setProgress] = useState({ position: 0, duration: 0 });
 
-  const playerRef = useRef<AudioPlayer | null>(null);
+  const plRef = useRef<AudioPlaylist | null>(null);
   const queueRef = useRef<Track[]>([]);
   const indexRef = useRef(-1);
   const repeatRef = useRef<Repeat>('off');
   const qualityRef = useRef<QualityId>('original');
   const progressRef = useRef({ position: 0, duration: 0 });
-  const tokenRef = useRef(0);
-  const endedRef = useRef(0);
+  const baseRef = useRef(0); // indice in coda del primo brano caricato nel player nativo
+  const loadedEndRef = useRef(0); // indice in coda (escluso) dell'ultimo brano caricato
+  const suppressUntilRef = useRef(0);
+  const lockActiveRef = useRef(false);
+  const metaTokenRef = useRef(0);
+  const notifAskedRef = useRef(false);
   const reportedRef = useRef(false);
   const playIdRef = useRef(uuid());
+  const endedRef = useRef('');
   const installIdRef = useRef(uuid());
-  const statusRef = useRef<(s: AudioStatus) => void>(() => {});
+  const statusRef = useRef<(s: AudioPlaylistStatus) => void>(() => {});
+  const changedRef = useRef<(e: { currentIndex: number }) => void>(() => {});
 
   repeatRef.current = repeat;
   qualityRef.current = quality;
 
   const current: Track | undefined = queue[index];
 
-  /* ---------------------------- Caricamento brano ---------------------------- */
+  /* ---------------------------- Helper interni ---------------------------- */
 
-  const startTrack = useCallback(
-    async (track: Track) => {
-      const p = playerRef.current;
-      if (!p || !api) return;
-      const token = ++tokenRef.current;
-      reportedRef.current = false;
-      playIdRef.current = uuid();
-      progressRef.current = { position: 0, duration: track.duration };
-      setProgress(progressRef.current);
-      setBuffering(true);
+  const sourceFor = (t: Track) => {
+    const q = QUALITIES[qualityRef.current];
+    const params = q.format ? { format: q.format, bitrate: q.bitrate } : undefined;
+    return { uri: api!.streamUrl(t.id, params), headers: api!.authHeaders(), name: t.title };
+  };
 
-      const q = QUALITIES[qualityRef.current];
-      const params = q.format ? { format: q.format, bitrate: q.bitrate as string } : undefined;
-      const items: { path: string; params?: Record<string, string> }[] = [
-        { path: `/api/v1/tracks/${track.id}/stream`, ...(params ? { params } : {}) },
-      ];
-      if (track.has_cover) items.push({ path: `/api/v1/tracks/${track.id}/cover`, params: { size: '600' } });
+  const resetPlayState = () => {
+    reportedRef.current = false;
+    playIdRef.current = uuid();
+    endedRef.current = '';
+    progressRef.current = { position: 0, duration: 0 };
+    setProgress(progressRef.current);
+  };
 
-      let source: { uri: string; headers?: Record<string, string> };
-      let artwork: string | undefined;
-      try {
-        const urls = await api.sign(items, 6 * 3600);
-        source = { uri: urls[0] };
-        artwork = urls[1];
-      } catch {
-        // server senza URL firmati: si ripiega sull'header Authorization
-        source = { uri: api.streamUrl(track.id, params), headers: api.authHeaders() };
+  /** Titolo/artista/copertina sullo schermo bloccato e nella notifica. */
+  const applyMetadata = async (track: Track) => {
+    const pl = plRef.current;
+    if (!pl || !api) return;
+    const token = ++metaTokenRef.current;
+    const meta = { title: track.title, artist: track.artist, albumTitle: track.album };
+    try {
+      if (!lockActiveRef.current) {
+        pl.setActiveForLockScreen(true, meta, LOCK_OPTIONS);
+        lockActiveRef.current = true;
+      } else {
+        pl.updateLockScreenMetadata(meta);
       }
-      if (token !== tokenRef.current) return; // nel frattempo è partito un altro brano
-
-      try {
-        p.replace(source);
-        p.play();
+    } catch {}
+    if (!track.has_cover) return;
+    try {
+      // il sistema scarica la copertina da solo, senza header: serve un URL firmato
+      const [artworkUrl] = await api.sign([{ path: `/api/v1/tracks/${track.id}/cover`, params: { size: '600' } }], 6 * 3600);
+      if (token === metaTokenRef.current) {
         try {
-          p.setActiveForLockScreen(true, {
-            title: track.title,
-            artist: track.artist,
-            albumTitle: track.album,
-            artworkUrl: artwork,
-          });
+          pl.updateLockScreenMetadata({ ...meta, artworkUrl });
         } catch {}
-      } catch {
-        setBuffering(false);
       }
-    },
-    [api],
-  );
+    } catch {}
+  };
 
-  const goTo = useCallback(
-    (i: number) => {
-      const t = queueRef.current[i];
-      if (!t) return;
-      indexRef.current = i;
-      setIndex(i);
-      startTrack(t);
-    },
-    [startTrack],
-  );
-
-  /* ---------------------------- Comandi pubblici ---------------------------- */
-
-  const play = useCallback(
-    (tracks: Track[], startIndex = 0) => {
-      if (!tracks.length) return;
-      queueRef.current = tracks;
-      setQueue(tracks);
-      goTo(Math.min(Math.max(startIndex, 0), tracks.length - 1));
-    },
-    [goTo],
-  );
-
-  const next = useCallback(() => {
-    const len = queueRef.current.length;
-    if (!len) return;
-    let ni = indexRef.current + 1;
-    if (ni >= len) {
-      if (repeatRef.current === 'all') ni = 0;
-      else {
-        playerRef.current?.pause();
-        playerRef.current?.seekTo(0);
-        return;
-      }
+  const maybeRefill = () => {
+    const pl = plRef.current;
+    const q = queueRef.current;
+    if (!pl || !api) return;
+    if (loadedEndRef.current < q.length && loadedEndRef.current - indexRef.current < REFILL_AT) {
+      const end = Math.min(q.length, loadedEndRef.current + CHUNK);
+      for (let i = loadedEndRef.current; i < end; i++) pl.add(sourceFor(q[i]));
+      loadedEndRef.current = end;
     }
-    goTo(ni);
-  }, [goTo]);
+  };
 
-  const prev = useCallback(() => {
-    if (!queueRef.current.length) return;
-    if (progressRef.current.position > 3 || indexRef.current <= 0) {
-      playerRef.current?.seekTo(0);
-      return;
+  const loadWindow = (tracks: Track[], startIndex: number) => {
+    const pl = plRef.current;
+    if (!pl || !api) return;
+    suppressUntilRef.current = Date.now() + 600; // ignora gli eventi generati dal ricaricamento
+    const base = Math.max(0, startIndex - BACK_WINDOW);
+    const end = Math.min(tracks.length, startIndex + CHUNK);
+    pl.clear();
+    for (let i = base; i < end; i++) pl.add(sourceFor(tracks[i]));
+    baseRef.current = base;
+    loadedEndRef.current = end;
+    pl.skipTo(startIndex - base);
+    pl.play();
+  };
+
+  const goTo = (qi: number) => {
+    const pl = plRef.current;
+    const t = queueRef.current[qi];
+    if (!pl || !t) return;
+    indexRef.current = qi;
+    setIndex(qi);
+    resetPlayState();
+    if (qi >= baseRef.current && qi < loadedEndRef.current) {
+      suppressUntilRef.current = Date.now() + 600;
+      pl.skipTo(qi - baseRef.current);
+      pl.play();
+    } else {
+      loadWindow(queueRef.current, qi);
     }
-    goTo(indexRef.current - 1);
-  }, [goTo]);
+    applyMetadata(t);
+    maybeRefill();
+  };
 
-  const toggle = useCallback(() => {
-    const p = playerRef.current;
-    if (!p || indexRef.current < 0) return;
-    if (p.playing) p.pause();
-    else {
-      const { position, duration } = progressRef.current;
-      if (duration > 0 && position >= duration - 0.5) p.seekTo(0);
-      p.play();
-    }
-  }, []);
+  /* ---------------------------- Eventi del player nativo ---------------------------- */
 
-  const seek = useCallback((s: number) => {
-    playerRef.current?.seekTo(s);
-  }, []);
-
-  const enqueue = useCallback(
-    (t: Track) => {
-      if (!queueRef.current.length) return play([t], 0);
-      const nq = [...queueRef.current, t];
-      queueRef.current = nq;
-      setQueue(nq);
-    },
-    [play],
-  );
-
-  const playNext = useCallback(
-    (t: Track) => {
-      if (!queueRef.current.length) return play([t], 0);
-      const nq = queueRef.current.slice();
-      nq.splice(indexRef.current + 1, 0, t);
-      queueRef.current = nq;
-      setQueue(nq);
-    },
-    [play],
-  );
-
-  const cycleRepeat = useCallback(() => setRepeat((r) => (r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')), []);
-
-  const setQuality = useCallback((q: QualityId) => {
-    setQualityState(q);
-    AsyncStorage.setItem(QUALITY_KEY, q).catch(() => {});
-  }, []);
-
-  /* ---------------------------- Eventi del player ---------------------------- */
-
-  statusRef.current = (s: AudioStatus) => {
+  statusRef.current = (s: AudioPlaylistStatus) => {
     setPlaying(s.playing);
     setBuffering(!!s.isBuffering);
 
@@ -227,31 +201,57 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       });
     }
 
-    if (s.didJustFinish && endedRef.current !== tokenRef.current) {
-      endedRef.current = tokenRef.current;
-      if (repeatRef.current === 'one') {
-        playerRef.current?.seekTo(0);
-        playerRef.current?.play();
-      } else {
-        next();
-      }
+    // Fine coda con "ripeti tutto": si riparte dal primo brano
+    if (s.didJustFinish && endedRef.current !== playIdRef.current) {
+      endedRef.current = playIdRef.current;
+      if (indexRef.current === queueRef.current.length - 1 && repeatRef.current === 'all') goTo(0);
     }
   };
 
+  // Cambio brano deciso dal sistema (pulsanti sullo schermo bloccato, cuffie, auto, fine brano)
+  changedRef.current = ({ currentIndex }) => {
+    if (Date.now() < suppressUntilRef.current) return;
+    const qi = baseRef.current + currentIndex;
+    if (qi === indexRef.current) return;
+    const t = queueRef.current[qi];
+    if (!t) return;
+    indexRef.current = qi;
+    setIndex(qi);
+    resetPlayState();
+    applyMetadata(t);
+    maybeRefill();
+  };
+
   useEffect(() => {
-    setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true }).catch(() => {});
-    const p = createAudioPlayer(null);
-    playerRef.current = p;
-    const sub = p.addListener('playbackStatusUpdate', (s: AudioStatus) => statusRef.current(s));
+    // 'doNotMix' è richiesto perché il sistema associ i controlli dello schermo bloccato all'app
+    setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' }).catch(() => {});
+    const pl = createAudioPlaylist({ sources: [], loop: 'none' });
+    plRef.current = pl;
+    const s1 = pl.addListener('playlistStatusUpdate', (s: AudioPlaylistStatus) => statusRef.current(s));
+    const s2 = pl.addListener('trackChanged', (e: { currentIndex: number }) => changedRef.current(e));
     AsyncStorage.getItem(QUALITY_KEY)
       .then((v) => v && v in QUALITIES && setQualityState(v as QualityId))
       .catch(() => {});
     return () => {
-      sub.remove();
-      p.remove();
-      playerRef.current = null;
+      s1.remove();
+      s2.remove();
+      try {
+        pl.clearLockScreenControls();
+      } catch {}
+      pl.destroy();
+      plRef.current = null;
+      lockActiveRef.current = false;
     };
   }, []);
+
+  // "Ripeti un brano" = loop nativo del brano corrente
+  useEffect(() => {
+    const pl = plRef.current;
+    if (!pl) return;
+    try {
+      pl.loop = repeat === 'one' ? 'single' : 'none';
+    } catch {}
+  }, [repeat]);
 
   // "Sta ascoltando" per la pagina Attività degli admin: a ogni cambio di stato e ogni 30 s
   useEffect(() => {
@@ -264,7 +264,98 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, [api, current?.id, playing]);
 
-  /* ---------------------------- Valori esposti ---------------------------- */
+  /* ---------------------------- Comandi pubblici (stabili) ---------------------------- */
+
+  const impl = useRef({
+    play: (_tracks: Track[], _start: number) => {},
+    next: () => {},
+    prev: () => {},
+    enqueue: (_t: Track) => {},
+    playNext: (_t: Track) => {},
+  });
+
+  impl.current = {
+    play: (tracks, startIndex) => {
+      if (!tracks.length) return;
+      if (Platform.OS === 'android' && !notifAskedRef.current) {
+        // Android 13+: senza permesso la notifica con i controlli non compare
+        notifAskedRef.current = true;
+        requestNotificationPermissionsAsync().catch(() => {});
+      }
+      queueRef.current = tracks;
+      setQueue(tracks);
+      baseRef.current = 0;
+      loadedEndRef.current = 0; // forza il ricaricamento della finestra
+      goTo(Math.min(Math.max(startIndex, 0), tracks.length - 1));
+    },
+    next: () => {
+      const len = queueRef.current.length;
+      if (!len) return;
+      const ni = indexRef.current + 1;
+      if (ni < len) goTo(ni);
+      else if (repeatRef.current === 'all') goTo(0);
+      else {
+        plRef.current?.pause();
+        plRef.current?.seekTo(0);
+      }
+    },
+    prev: () => {
+      if (!queueRef.current.length) return;
+      if (progressRef.current.position > 3 || indexRef.current <= 0) plRef.current?.seekTo(0);
+      else goTo(indexRef.current - 1);
+    },
+    enqueue: (t) => {
+      const pl = plRef.current;
+      if (!queueRef.current.length || !pl) return impl.current.play([t], 0);
+      const wasAtEnd = loadedEndRef.current === queueRef.current.length;
+      const nq = [...queueRef.current, t];
+      queueRef.current = nq;
+      setQueue(nq);
+      if (wasAtEnd) {
+        pl.add(sourceFor(t));
+        loadedEndRef.current = nq.length;
+      }
+    },
+    playNext: (t) => {
+      const pl = plRef.current;
+      if (!queueRef.current.length || !pl) return impl.current.play([t], 0);
+      const at = indexRef.current + 1;
+      const nq = queueRef.current.slice();
+      nq.splice(at, 0, t);
+      queueRef.current = nq;
+      setQueue(nq);
+      pl.insert(sourceFor(t), at - baseRef.current);
+      loadedEndRef.current += 1;
+    },
+  };
+
+  const play = useCallback((tracks: Track[], startIndex = 0) => impl.current.play(tracks, startIndex), []);
+  const next = useCallback(() => impl.current.next(), []);
+  const prev = useCallback(() => impl.current.prev(), []);
+  const enqueue = useCallback((t: Track) => impl.current.enqueue(t), []);
+  const playNext = useCallback((t: Track) => impl.current.playNext(t), []);
+
+  const toggle = useCallback(() => {
+    const pl = plRef.current;
+    if (!pl || indexRef.current < 0) return;
+    if (pl.playing) pl.pause();
+    else {
+      const { position, duration } = progressRef.current;
+      if (duration > 0 && position >= duration - 0.5) pl.seekTo(0);
+      pl.play();
+    }
+  }, []);
+
+  const seek = useCallback((s: number) => {
+    plRef.current?.seekTo(s);
+  }, []);
+
+  const cycleRepeat = useCallback(() => setRepeat((r) => (r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')), []);
+
+  const setQuality = useCallback((q: QualityId) => {
+    setQualityState(q);
+    AsyncStorage.setItem(QUALITY_KEY, q).catch(() => {});
+  }, []);
 
   const value = useMemo<PlayerApi>(
     () => ({ queue, index, current, playing, buffering, repeat, quality, play, toggle, next, prev, seek, enqueue, playNext, cycleRepeat, setQuality }),
