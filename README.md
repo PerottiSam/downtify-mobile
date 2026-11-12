@@ -1,79 +1,71 @@
 # Downtify Mobile
 
-App React Native (Expo + TypeScript) per un server [Downtify](https://downtify.henriquesebastiao.com).
+React Native (Expo + TypeScript) app for [Downtify](https://downtify.henriquesebastiao.com) server.
 
-Usa **solo l'API normale** della [API Reference](https://downtify.henriquesebastiao.com/api-reference/): nessuna chiamata
-alle rotte `/api/v1/*` ("Mobile API"). I brani non hanno un id: sono identificati dal loro percorso `file`,
-esattamente come fa la pagina web.
+Uses **only the normal API** from the [API Reference](https://downtify.henriquesebastiao.com/api-reference/): no calls to `/api/v1/*` routes ("Mobile API"). Tracks don't have an id — they're identified by their `file` path, just like the web page does.
 
-## Avvio
+## Getting Started
 
 ```bash
 npm install --legacy-peer-deps
-npx expo install --fix      # allinea react-native e gli altri pacchetti alla SDK Expo
-npx expo run:android        # oppure: npx expo run:ios  (development build)
+npx expo install --fix      # align react-native and other packages to Expo SDK version
+npx expo run:android        # or: npx expo run:ios  (development build)
 ```
 
-Serve una **development build**: i controlli sullo schermo bloccato (`expo-audio`) non sono affidabili in Expo Go.
-Il telefono deve raggiungere il server (stessa Wi-Fi, VPN o indirizzo https). `app.json` abilita HTTP in chiaro
-(Android e iOS) perché Downtify di solito gira in LAN: se usi solo https, puoi toglierlo.
+A **development build** is required — the background screen lock controls (`expo-audio`) are unreliable in Expo Go.
 
-## Endpoint usati
+The phone must reach the server (same Wi-Fi, VPN, or https address). `app.json` enables HTTP plaintext (Android and iOS) because Downtify typically runs on LAN: if you use only https, you can remove it.
 
-| Area | Endpoint |
-|---|---|
-| Connessione | `GET /api/server/info` |
-| Accesso | `POST /api/auth/token` (utente+password) · `POST /api/auth/pair` (codice) · header `Authorization: Bearer` |
-| Libreria | `GET /tracks` · `GET /list?refresh=true` (riscansione) |
-| Playlist e preferiti | `GET /playlists` (la playlist con `liked: true` contiene i preferiti) · `PUT /api/likes` |
-| Ascolto | `GET /media/{file}` (streaming, con Range) · `GET /lyrics?file=` |
-| Immagini | `GET /cover?file=&size=` · `GET /playlist-cover?file=` |
-| Cerca e scarica | `GET /api/songs/search` · `GET /api/discover/chart` · `GET /api/url/resolve` · `POST /api/download/batch` |
-| Coda download | `GET /api/queue` · `GET /api/queue/state` · `DELETE /api/queue/completed` · `DELETE /api/queue/item` |
-| Tempo reale | `WS /api/ws` (`library_changed`, `playlists_changed`, `likes`, `queue_reload`, avanzamento download) |
-| Attività | `POST /api/activity/playback` |
+## Endpoints Used
 
-Un dispositivo abbinato non può cambiare impostazioni, cancellare file o gestire dispositivi (403): l'app non offre quelle azioni.
+| Area                  | Endpoint                                                                                                   |
+| --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Connection            | `GET /api/server/info`                                                                                     |
+| Authentication        | `POST /api/auth/token` (username+password) · `POST /api/auth/pair` (code) · header `Authorization: Bearer` |
+| Library               | `GET /tracks` · `GET /list?refresh=true` (rescan)                                                          |
+| Playlists & Favorites | `GET /playlists` (the playlist with `liked: true` contains favorites) · `PUT /api/likes`                   |
+| Playback              | `GET /media/{file}` (streaming, with Range) · `GET /lyrics?file=`                                          |
+| Images                | `GET /cover?file=&size=` · `GET /playlist-cover?file=`                                                     |
+| Search & Download     | `GET /api/songs/search` · `GET /api/discover/chart` · `GET /api/url/resolve` · `POST /api/download/batch`  |
+| Download Queue        | `GET /api/queue` · `GET /api/queue/state` · `DELETE /api/queue/completed` · `DELETE /api/queue/item`       |
+| Real-time             | `WS /api/ws` (`library_changed`, `playlists_changed`, `likes`, `queue_reload`, download progress)          |
+| Activity              | `POST /api/activity/playback`                                                                              |
 
-## ⚠ Da verificare
+A paired device cannot change settings, delete files, or manage devices (403): the app doesn't offer those actions.
 
-`PUT /api/likes` è l'unica chiamata di cui non ho potuto leggere il corpo (la sezione *Likes* della documentazione
-era tra quelle tagliate dal lettore). L'app invia `{ "file": "<percorso>", "liked": true|false }`. Se il tuo server
-vuole un altro formato, si cambia in **una sola funzione**: `setLike` in `src/api/client.ts`.
-La lettura dei preferiti non dipende da questo: viene da `GET /playlists`.
+## ⚠ TODO
 
-## Controlli sullo schermo bloccato / notifica
+`PUT /api/likes` is the only call I couldn't read from documentation (the _Likes_ section of docs was cut off by my reader). The app sends `{ "file": "<path>", "liked": true|false }`. If your server wants a different format, just change in **one function**: `setLike` in `src/api/client.ts`. Reading favorites doesn't depend on this: it comes from `GET /playlists`.
 
-Titolo, artista, copertina e **precedente · play/pausa · successivo** su iOS (schermata di blocco e Centro di controllo)
-e Android (notifica multimediale). Il player è un `AudioPlaylist` di `expo-audio`: avanti/indietro li gestisce il
-sistema anche con l'app in background; nel player nativo c'è solo una finestra della coda (10 brani prima, 100 dopo,
-rifornita man mano), la coda completa resta in JavaScript. La copertina viene scaricata con l'header `Authorization`
-da `/cover` in cache e passata al sistema come file locale (il sistema non può mandare l'header da solo).
-Servono una SDK Expo recente (il package.json punta alla 58) e, su Android 13+, il permesso notifiche (richiesto al primo ascolto).
+## Lock Screen / Notification Controls
 
-## Cosa cambia rispetto alla versione con la Mobile API
+Title, artist, artwork, and **previous · play/pause · next** on iOS (lock screen & Control Center) and Android (media notification). The player is an `AudioPlaylist` from `expo-audio`: skip/next is handled by the system even with the app in the background. In the native player there's only a queue window (10 tracks before, 100 after, refilled as needed); the full queue stays in JavaScript. Artwork is downloaded via `/cover` with the `Authorization` header, cached locally, and passed to the system as a local file (the system can't send headers by itself).
 
-- **Niente ascolti registrati (`/api/discover/listens`)**: quell'endpoint vuole l'id del brano (`t7b2…`), che esiste
-  solo nel feed `/api/v1/library`. Con l'API normale non c'è un id da mandare, quindi non li segnalo.
-- **Niente transcodifica**: lo streaming è sempre il file originale (la conversione AAC/Opus è solo nella v1).
-- **Niente cache locale della libreria**: a ogni avvio si scarica `GET /tracks` (il server risponde da una copia in
-  memoria); al ritorno in primo piano si riallinea se è passato più di un minuto, e subito se arriva `library_changed`.
-- Album e artisti sono raggruppati dall'app (album artist + titolo album, come la pagina web).
+This requires a recent Expo SDK (package.json targets 58) and, on Android 13+, the notification permission (required for first playback).
 
-## Struttura
+## Differences from the version with Mobile API
+
+- **No recorded listens (`/api/discover/listens`)**: that endpoint requires track ID (`t7b2…`), which only exists in `/api/v1/library` feed. With the normal API there's no ID to send, so we don't record them.
+- **No transcoding**: streaming is always the original file (AAC/Opus conversion happens only in v1).
+- **No local library cache**: every launch fetches `GET /tracks` (server responds from an in-memory copy); when returning to foreground after 1 minute or on `library_changed`, it syncs again.
+- Albums and artists are grouped by the app (album artist + album title, like the web page).
+
+## Structure
 
 ```
-App.tsx                      provider + navigazione (auth / app)
-src/api/client.ts            client REST tipizzato (solo API normale)
-src/store/session.tsx        server, token (SecureStore), utente
-src/store/data.tsx           libreria, preferiti, playlist, coda, WebSocket
-src/store/player.tsx         expo-audio (AudioPlaylist), coda, schermo bloccato
-src/navigation/              tab bar + stack per tab + modale player
+App.tsx                      provider + navigation (auth / app)
+src/api/client.ts            typed REST client (normal API only)
+src/store/session.tsx        server, token (SecureStore), user
+src/store/data.tsx           library, favorites, playlists, queue, WebSocket
+src/store/player.tsx         expo-audio (AudioPlaylist), queue, lock screen
+src/navigation/              tab bar + stack for tabs + modal player
 src/screens/                 Connect, SignIn, Library, Search, Playlists, TrackList, Downloads, More, Player
 src/components/              Cover, TrackRow, MiniPlayer, ui
 ```
 
-## Non ancora fatto
+## Not Yet Done
 
-Ascolto offline (si può scaricare da `/media/{file}` con `Range`), scoperta automatica mDNS (`_downtify._tcp`, serve
-`react-native-zeroconf` e una dev build), scansione QR di abbinamento (`expo-camera`), podcast, modifica delle playlist.
+- Offline playback (can download via `/media/{file}` with `Range`)
+- Automatic discovery mDNS (`_downtify._tcp`, needs `react-native-zeroconf` and a dev build)
+- QR code scanning for pairing (`expo-camera`)
+- Playlist editing
