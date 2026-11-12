@@ -1,120 +1,117 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { Playlist, QueueJob, Track, errorMessage } from '../api/client';
-import { libraryCacheKey, uuid } from '../utils';
+import { norm, uuid } from '../utils';
 import { useSession } from './session';
 
 export interface AlbumGroup {
-  id: string;
+  key: string;
   title: string;
   artist: string;
   year?: string;
-  trackIds: string[];
-  coverTrackId?: string;
+  files: string[];
+  coverFile?: string;
 }
 
 export interface ArtistGroup {
-  id: string;
+  key: string;
   name: string;
-  trackIds: string[];
+  files: string[];
   albumCount: number;
-  coverTrackId?: string;
+  coverFile?: string;
 }
 
 interface DataCtx {
   tracks: Track[];
-  byId: Map<string, Track>;
+  byFile: Map<string, Track>;
   albums: AlbumGroup[];
   artists: ArtistGroup[];
   likes: Set<string>;
-  likeIds: string[];
   playlists: Playlist[];
   queue: QueueJob[];
+  queuePaused: boolean;
   activeDownloads: number;
   syncing: boolean;
   error?: string;
-  sync(opts?: { refresh?: boolean; full?: boolean }): Promise<void>;
+  sync(opts?: { rescan?: boolean }): Promise<void>;
   refreshPlaylists(): Promise<void>;
   refreshQueue(): Promise<void>;
-  toggleLike(trackId: string): Promise<void>;
+  toggleLike(file: string): Promise<void>;
 }
 
 const Ctx = createContext<DataCtx | null>(null);
 
-export function DataProvider({ children }: { children: React.ReactNode }) {
-  const { api, baseUrl, signOut } = useSession();
+const VARIOUS = 'various artists';
 
-  const [trackMap, setTrackMap] = useState<Map<string, Track>>(new Map());
-  const [likeIds, setLikeIds] = useState<string[]>([]);
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+/** Artista sotto cui la libreria raggruppa un brano (stessa logica della pagina web). */
+function groupArtist(t: Track): string {
+  const aa = t.album_artist?.trim();
+  if (aa && !(aa.toLowerCase() === VARIOUS && !t.compilation)) return aa;
+  return t.artists?.[0] || t.artist || 'Sconosciuto';
+}
+
+export function DataProvider({ children }: { children: React.ReactNode }) {
+  const { api, signOut } = useSession();
+
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [playlistRows, setPlaylistRows] = useState<Playlist[]>([]);
+  const [likeFiles, setLikeFiles] = useState<string[]>([]);
   const [queue, setQueue] = useState<QueueJob[]>([]);
+  const [queuePaused, setQueuePaused] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string>();
 
-  const cursorRef = useRef(0);
-  const mapRef = useRef(trackMap);
+  const lock = useRef(false);
+  const pending = useRef<{ rescan?: boolean } | null>(null);
+  const lastSync = useRef(0);
   const queueRef = useRef(queue);
-  const syncLock = useRef(false);
-  const syncPending = useRef(false);
-  mapRef.current = trackMap;
   queueRef.current = queue;
 
-  const likes = useMemo(() => new Set(likeIds), [likeIds]);
+  const likes = useMemo(() => new Set(likeFiles), [likeFiles]);
   const likesRef = useRef(likes);
   likesRef.current = likes;
 
-  /* ------------------------------ Sync libreria ------------------------------ */
+  /* ------------------------------ Caricamenti ------------------------------ */
 
   const syncRef = useRef<DataCtx['sync']>(async () => {});
 
   const sync = useCallback<DataCtx['sync']>(
     async (opts = {}) => {
       if (!api) return;
-      if (syncLock.current) {
-        syncPending.current = true;
+      if (lock.current) {
+        pending.current = { rescan: opts.rescan || pending.current?.rescan };
         return;
       }
-      syncLock.current = true;
+      lock.current = true;
       setSyncing(true);
       setError(undefined);
       try {
-        const res = await api.library(opts.full ? 0 : cursorRef.current, opts.refresh);
-        const next = res.full ? new Map<string, Track>() : new Map(mapRef.current);
-        for (const t of res.tracks) next.set(t.id, t);
-        for (const id of res.deleted ?? []) next.delete(id);
-        cursorRef.current = res.cursor;
-        mapRef.current = next;
-        setTrackMap(next);
-        AsyncStorage.setItem(
-          libraryCacheKey(baseUrl),
-          JSON.stringify({ cursor: res.cursor, tracks: Array.from(next.values()) }),
-        ).catch(() => {});
+        if (opts.rescan) await api.rescan().catch(() => {});
+        setTracks(await api.tracks());
+        lastSync.current = Date.now();
       } catch (e) {
         setError(errorMessage(e));
       } finally {
-        syncLock.current = false;
+        lock.current = false;
         setSyncing(false);
-        if (syncPending.current) {
-          syncPending.current = false;
-          setTimeout(() => syncRef.current(), 0);
+        const p = pending.current;
+        if (p) {
+          pending.current = null;
+          setTimeout(() => syncRef.current(p), 0);
         }
       }
     },
-    [api, baseUrl],
+    [api],
   );
   syncRef.current = sync;
-
-  const refreshLikes = useCallback(async () => {
-    if (!api) return;
-    try {
-      setLikeIds((await api.likes()).track_ids);
-    } catch {}
-  }, [api]);
 
   const refreshPlaylists = useCallback(async () => {
     if (!api) return;
     try {
-      setPlaylists(await api.playlists());
+      const rows = await api.playlists();
+      setPlaylistRows(rows);
+      // i preferiti sono la playlist "liked" (dal più recente)
+      setLikeFiles(rows.find((p) => p.liked)?.files ?? []);
     } catch {}
   }, [api]);
 
@@ -123,47 +120,41 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       setQueue(await api.queue());
     } catch {}
+    try {
+      setQueuePaused((await api.queueState()).paused);
+    } catch {}
   }, [api]);
 
-  /* Avvio: cache locale → sync incrementale */
+  const refreshAll = useCallback(() => {
+    syncRef.current();
+    refreshPlaylists();
+    refreshQueue();
+  }, [refreshPlaylists, refreshQueue]);
+
   useEffect(() => {
-    if (!api) return;
-    let alive = true;
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(libraryCacheKey(baseUrl));
-        if (raw && alive) {
-          const { cursor, tracks } = JSON.parse(raw) as { cursor: number; tracks: Track[] };
-          const m = new Map<string, Track>();
-          tracks.forEach((t) => m.set(t.id, t));
-          cursorRef.current = cursor ?? 0;
-          mapRef.current = m;
-          setTrackMap(m);
-        }
-      } catch {}
-      if (!alive) return;
-      sync();
-      refreshLikes();
-      refreshPlaylists();
-      refreshQueue();
-    })();
-    return () => {
-      alive = false;
-    };
+    if (api) refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
-  /* ------------------------------ Like ------------------------------ */
+  // Il WebSocket muore in background: al ritorno in primo piano si riallinea tutto
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active' && api && Date.now() - lastSync.current > 60000) refreshAll();
+    });
+    return () => sub.remove();
+  }, [api, refreshAll]);
+
+  /* ------------------------------ Preferiti ------------------------------ */
 
   const toggleLike = useCallback(
-    async (trackId: string) => {
+    async (file: string) => {
       if (!api) return;
-      const liked = !likesRef.current.has(trackId);
-      setLikeIds((prev) => (liked ? [trackId, ...prev.filter((x) => x !== trackId)] : prev.filter((x) => x !== trackId)));
+      const liked = !likesRef.current.has(file);
+      setLikeFiles((prev) => (liked ? [file, ...prev.filter((f) => f !== file)] : prev.filter((f) => f !== file)));
       try {
-        await api.setLike(trackId, liked);
+        await api.setLike(file, liked);
       } catch {
-        setLikeIds((prev) => (liked ? prev.filter((x) => x !== trackId) : [trackId, ...prev]));
+        setLikeFiles((prev) => (liked ? prev.filter((f) => f !== file) : [file, ...prev]));
       }
     },
     [api],
@@ -178,12 +169,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         sync();
         break;
       case 'playlists_changed':
+      case 'likes':
         refreshPlaylists();
         break;
-      case 'likes':
-        refreshLikes();
-        break;
       case 'queue_reload':
+      case 'queue_state':
         refreshQueue();
         break;
       case undefined: {
@@ -268,63 +258,81 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   /* ------------------------------ Derivati ------------------------------ */
 
-  const tracks = useMemo(
-    () => Array.from(trackMap.values()).sort((a, b) => (b.added ?? 0) - (a.added ?? 0)),
-    [trackMap],
-  );
+  const sorted = useMemo(() => tracks.slice().sort((a, b) => (b.added ?? 0) - (a.added ?? 0)), [tracks]);
+  const byFile = useMemo(() => new Map(tracks.map((t) => [t.file, t])), [tracks]);
 
   const { albums, artists } = useMemo(() => {
     const albumMap = new Map<string, Track[]>();
-    const artistMap = new Map<string, Track[]>();
+    const artistMap = new Map<string, { name: string; list: Track[] }>();
     for (const t of tracks) {
-      const ak = t.album_id || `single:${t.artist_id}`;
+      const ga = groupArtist(t);
+      const ak = `${norm(ga)}|${norm(t.album) || 'single'}`;
       (albumMap.get(ak) ?? albumMap.set(ak, []).get(ak)!).push(t);
-      const rk = t.artist_id || `artist:${t.artist}`;
-      (artistMap.get(rk) ?? artistMap.set(rk, []).get(rk)!).push(t);
+      if (ga.toLowerCase() !== VARIOUS) {
+        const rk = norm(ga);
+        (artistMap.get(rk) ?? artistMap.set(rk, { name: ga, list: [] }).get(rk)!).list.push(t);
+      }
     }
-    const byTrackNo = (a: Track, b: Track) =>
+    const byNo = (a: Track, b: Track) =>
       (a.track_number ?? 0) - (b.track_number ?? 0) || a.title.localeCompare(b.title);
 
     const albums: AlbumGroup[] = [];
-    albumMap.forEach((list, id) => {
-      list.sort(byTrackNo);
+    albumMap.forEach((list, key) => {
+      list.sort(byNo);
       const first = list[0];
       albums.push({
-        id,
+        key,
         title: first.album || 'Singoli',
-        artist: first.album_artist || first.artist,
+        artist: groupArtist(first),
         year: first.year,
-        trackIds: list.map((t) => t.id),
-        coverTrackId: (list.find((t) => t.has_cover) ?? first).id,
+        files: list.map((t) => t.file),
+        coverFile: list.find((t) => t.has_cover)?.file,
       });
     });
     albums.sort((a, b) => a.title.localeCompare(b.title));
 
     const artists: ArtistGroup[] = [];
-    artistMap.forEach((list, id) => {
-      const first = list[0];
+    artistMap.forEach(({ name, list }, key) => {
+      const withCover = list.find((t) => t.has_cover);
       artists.push({
-        id,
-        name: first.album_artist || first.artist,
-        trackIds: list.map((t) => t.id),
-        albumCount: new Set(list.map((t) => t.album_id)).size,
-        coverTrackId: (list.find((t) => t.has_cover) ?? first).id,
+        key,
+        name,
+        files: list.map((t) => t.file),
+        albumCount: new Set(list.map((t) => norm(t.album))).size,
+        coverFile: withCover?.file,
       });
     });
     artists.sort((a, b) => a.name.localeCompare(b.name));
     return { albums, artists };
   }, [tracks]);
 
+  // La playlist dei preferiti segue i like locali (anche prima che il server risponda)
+  const playlists = useMemo(() => {
+    const rest = playlistRows.filter((p) => !p.liked);
+    if (!likeFiles.length) return rest;
+    const base = playlistRows.find((p) => p.liked);
+    const liked: Playlist = {
+      name: 'Downtify Liked Songs',
+      manual: false,
+      cover: '',
+      ...base,
+      liked: true,
+      files: likeFiles,
+      count: likeFiles.length,
+    };
+    return [liked, ...rest];
+  }, [playlistRows, likeFiles]);
+
   const value = useMemo<DataCtx>(
     () => ({
-      tracks,
-      byId: trackMap,
+      tracks: sorted,
+      byFile,
       albums,
       artists,
       likes,
-      likeIds,
       playlists,
       queue,
+      queuePaused,
       activeDownloads,
       syncing,
       error,
@@ -333,7 +341,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       refreshQueue,
       toggleLike,
     }),
-    [tracks, trackMap, albums, artists, likes, likeIds, playlists, queue, activeDownloads, syncing, error, sync, refreshPlaylists, refreshQueue, toggleLike],
+    [sorted, byFile, albums, artists, likes, playlists, queue, queuePaused, activeDownloads, syncing, error, sync, refreshPlaylists, refreshQueue, toggleLike],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

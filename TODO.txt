@@ -1,0 +1,8 @@
+- Combine web api GET /library with the mobile one to get song id
+so that i can use it for streaming content (i keep the web api because the library is more homogeneous with the web version)
+
+- finish with the implementation of SwipeListView for add to queue
+
+- add / remove songs from playlist
+
+...

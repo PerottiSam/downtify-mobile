@@ -16,7 +16,7 @@ export function MiniPlayer() {
   return (
     <View style={styles.wrap}>
       <Pressable onPress={() => nav.navigate('Player')} style={styles.body}>
-        <Cover trackId={current.has_cover ? current.id : undefined} size={40} />
+        <Cover file={current.has_cover ? current.file : undefined} size={40} />
         <View style={{ flex: 1 }}>
           <Text numberOfLines={1} style={styles.title}>
             {current.title}

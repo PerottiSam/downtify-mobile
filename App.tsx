@@ -8,6 +8,7 @@ import { DataProvider } from "./src/store/data";
 import { PlayerProvider } from "./src/store/player";
 import { SessionProvider, useSession } from "./src/store/session";
 import { colors } from "./src/theme";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 const navTheme = {
   ...DarkTheme,
@@ -56,11 +57,13 @@ function Root() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
-      <SessionProvider>
-        <Root />
-      </SessionProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <SessionProvider>
+          <Root />
+        </SessionProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

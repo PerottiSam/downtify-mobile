@@ -1,5 +1,3 @@
-export const libraryCacheKey = (baseUrl: string) => `downtify.library.v1:${baseUrl}`;
-
 export function formatTime(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
@@ -7,6 +5,7 @@ export function formatTime(sec: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+/** Minuscolo, senza accenti né punteggiatura: per ricerche e confronti. */
 export function norm(s?: string | null): string {
   let out = (s ?? '').toLowerCase();
   try {
@@ -29,6 +28,17 @@ export function shuffled<T>(items: T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+/** Percorso della libreria → parte di URL: ogni segmento codificato, gli "/" restano. */
+export function encodePath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+export function hashString(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
 }
 
 export interface LrcLine {
@@ -62,5 +72,5 @@ export function songArtist(s: { artist?: string; artists?: string[] }): string {
 }
 
 export function firstArtist(name: string): string {
-  return name.split(/[;,&]/)[0] ?? name;
+  return name.split(/[;,&/]/)[0] ?? name;
 }

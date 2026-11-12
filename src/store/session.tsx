@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -10,9 +9,8 @@ import {
   pairWithCode,
   signInWithPassword,
 } from '../api/client';
-import { libraryCacheKey } from '../utils';
 
-const STORE_KEY = 'downtify.session.v1';
+const STORE_KEY = 'downtify.session.v2';
 
 interface Stored {
   baseUrl: string;
@@ -48,7 +46,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
-  // Ripristina la sessione salvata
   useEffect(() => {
     (async () => {
       try {
@@ -59,17 +56,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  // Capacità del server (in background; se offline si va avanti lo stesso)
+  // Info del server (in background; se offline si va avanti lo stesso)
   useEffect(() => {
     setServerInfo(null);
     if (!stored) return;
     fetchServerInfo(stored.baseUrl).then(setServerInfo).catch(() => {});
   }, [stored?.baseUrl]);
 
-  const signOut = useCallback(async () => {
-    if (stored) AsyncStorage.removeItem(libraryCacheKey(stored.baseUrl)).catch(() => {});
-    await persist(null);
-  }, [stored, persist]);
+  const signOut = useCallback(() => persist(null), [persist]);
   signOutRef.current = signOut;
 
   const api = useMemo(

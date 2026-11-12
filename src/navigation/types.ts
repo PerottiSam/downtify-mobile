@@ -15,7 +15,7 @@ export type RootParams = {
 /** Stack interno di ogni tab: le pagine di dettaglio si aprono QUI, sotto la tab bar. */
 export type TabStackParams = {
   Home: undefined;
-  TrackList: { title: string; subtitle?: string; trackIds: string[]; coverTrackId?: string };
+  TrackList: { title: string; subtitle?: string; files: string[]; coverFile?: string };
 };
 
 export type Nav = NativeStackNavigationProp<TabStackParams>;

@@ -5,9 +5,9 @@ import { useSession } from '../store/session';
 import { colors, radius } from '../theme';
 
 interface Props {
-  /** Copertina di un brano in libreria (richiede l'header Authorization). */
-  trackId?: string;
-  /** Copertina di una playlist: percorso restituito da /api/v1/playlists. */
+  /** File di un brano in libreria (`GET /cover?file=`, richiede l'header Authorization). */
+  file?: string;
+  /** Copertina di una playlist: il campo `cover` di `GET /playlists`. */
   playlistCover?: string;
   /** URL esterno pubblico (risultati di ricerca, classifiche). */
   uri?: string;
@@ -16,19 +16,19 @@ interface Props {
   style?: StyleProp<ViewStyle>;
 }
 
-export function Cover({ trackId, playlistCover, uri, size, round, style }: Props) {
+export function Cover({ file, playlistCover, uri, size, round, style }: Props) {
   const { api } = useSession();
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [trackId, playlistCover, uri]);
+  useEffect(() => setFailed(false), [file, playlistCover, uri]);
 
   const dim = { width: size, height: size, borderRadius: round ? size / 2 : radius.sm };
 
   let source: { uri: string; headers?: Record<string, string> } | null = null;
   if (uri) source = { uri };
   else if (api && playlistCover) source = { uri: api.playlistCoverUrl(playlistCover), headers: api.authHeaders() };
-  else if (api && trackId) {
+  else if (api && file) {
     const px = size <= 150 ? 150 : size <= 300 ? 300 : 600;
-    source = { uri: api.coverUrl(trackId, px as 150 | 300 | 600), headers: api.authHeaders() };
+    source = { uri: api.coverUrl(file, px as 150 | 300 | 600), headers: api.authHeaders() };
   }
 
   if (!source || failed) {

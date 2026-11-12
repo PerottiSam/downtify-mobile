@@ -12,11 +12,11 @@ const displayName = (p: Playlist) => (p.liked ? 'Brani preferiti' : p.name);
 
 export default function PlaylistsScreen() {
   const nav = useNavigation<Nav>();
-  const { playlists, byId, refreshPlaylists } = useData();
+  const { playlists, byFile, refreshPlaylists } = useData();
   const [refreshing, setRefreshing] = useState(false);
 
   const sections = useMemo(() => {
-    const mine = playlists.filter((p) => p.mine !== false).sort((a, b) => Number(b.liked) - Number(a.liked));
+    const mine = playlists.filter((p) => p.mine !== false);
     const shared = playlists.filter((p) => p.mine === false);
     return [
       { title: 'Le tue playlist', data: mine },
@@ -40,19 +40,26 @@ export default function PlaylistsScreen() {
         ListEmptyComponent={<EmptyState icon="albums-outline" title="Nessuna playlist" body="Le playlist scaricate o create sul server compariranno qui." />}
         renderSectionHeader={({ section }) => <Text style={styles.section}>{section.title}</Text>}
         renderItem={({ item }) => {
-          const ids = item.track_ids.filter((id) => byId.has(id));
+          // i file non più presenti in libreria si saltano
+          const files = item.files.filter((f) => byFile.has(f));
+          const firstWithCover = files.find((f) => byFile.get(f)?.has_cover);
+          const owner = item.owner && item.mine === false ? ` · di ${item.owner}` : '';
           return (
             <Pressable
               style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.surface }]}
-              onPress={() => nav.navigate('TrackList', { title: displayName(item), subtitle: item.owner && item.mine === false ? `di ${item.owner}` : undefined, trackIds: ids, coverTrackId: ids[0] })}
+              onPress={() =>
+                nav.navigate('TrackList', {
+                  title: displayName(item),
+                  subtitle: item.owner && item.mine === false ? `di ${item.owner}` : undefined,
+                  files,
+                  coverFile: firstWithCover,
+                })
+              }
             >
-              <Cover playlistCover={item.cover || undefined} trackId={item.cover ? undefined : ids[0]} size={56} />
+              <Cover playlistCover={item.cover || undefined} file={item.cover ? undefined : firstWithCover} size={56} />
               <View style={{ flex: 1 }}>
                 <Text numberOfLines={1} style={styles.name}>{displayName(item)}</Text>
-                <Text style={styles.sub}>
-                  {ids.length} brani{item.owner && item.mine === false ? ` · di ${item.owner}` : ''}
-                  {item.new ? ' · nuova' : ''}
-                </Text>
+                <Text style={styles.sub}>{files.length} brani{owner}</Text>
               </View>
             </Pressable>
           );

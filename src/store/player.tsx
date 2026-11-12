@@ -1,32 +1,31 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   AudioPlaylist,
   AudioPlaylistStatus,
   createAudioPlaylist,
   requestNotificationPermissionsAsync,
   setAudioModeAsync,
-} from 'expo-audio';
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform } from 'react-native';
-import { Track } from '../api/client';
-import { uuid } from '../utils';
-import { useSession } from './session';
+} from "expo-audio";
+import { File, Paths } from "expo-file-system";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Platform } from "react-native";
+import { Track } from "../api/client";
+import { hashString, uuid } from "../utils";
+import { useSession } from "./session";
 
-export type Repeat = 'off' | 'all' | 'one';
-export type QualityId = 'original' | 'aac-256' | 'opus-128';
-
-export const QUALITIES: Record<QualityId, { label: string; format?: string; bitrate?: string }> = {
-  original: { label: 'Originale' },
-  'aac-256': { label: 'AAC 256 kbps', format: 'aac', bitrate: '256' },
-  'opus-128': { label: 'Opus 128 kbps (risparmia dati)', format: 'opus', bitrate: '128' },
-};
-
-const QUALITY_KEY = 'downtify.quality';
+export type Repeat = "off" | "all" | "one";
 
 /**
  * Il player nativo (AudioPlaylist) ha SOLO una finestra della coda: così i pulsanti
  * "precedente/successivo" dello schermo bloccato e della notifica sono gestiti dal sistema,
- * anche con l'app in background, senza passare da JavaScript.
+ * anche con l'app in background. La coda completa resta qui, in JavaScript.
  */
 const BACK_WINDOW = 10; // brani precedenti caricati davanti al brano scelto
 const CHUNK = 100; // brani caricati in avanti per volta
@@ -41,25 +40,27 @@ const LOCK_OPTIONS = {
 
 export interface PlayerApi {
   queue: Track[];
+  userQueue: Track[]; // "In coda" (aggiunti dall'utente)
+  contextQueue: Track[]; // "Prossimi da..." (coda precalcolata / casuale)
   index: number;
   current?: Track;
   playing: boolean;
   buffering: boolean;
   repeat: Repeat;
-  quality: QualityId;
   play(tracks: Track[], startIndex?: number): void;
   toggle(): void;
   next(): void;
   prev(): void;
   seek(seconds: number): void;
   enqueue(track: Track): void;
-  playNext(track: Track): void;
   cycleRepeat(): void;
-  setQuality(q: QualityId): void;
 }
 
 const PlayerCtx = createContext<PlayerApi | null>(null);
-const ProgressCtx = createContext<{ position: number; duration: number }>({ position: 0, duration: 0 });
+const ProgressCtx = createContext<{ position: number; duration: number }>({
+  position: 0,
+  duration: 0,
+});
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const { api } = useSession();
@@ -68,15 +69,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [index, setIndex] = useState(-1);
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(false);
-  const [repeat, setRepeat] = useState<Repeat>('off');
-  const [quality, setQualityState] = useState<QualityId>('original');
+  const [repeat, setRepeat] = useState<Repeat>("off");
   const [progress, setProgress] = useState({ position: 0, duration: 0 });
+  const [userRange, setUserRange] = useState({ start: 0, end: 0 });
+  const userRangeRef = useRef({ start: 0, end: 0 });
 
   const plRef = useRef<AudioPlaylist | null>(null);
   const queueRef = useRef<Track[]>([]);
   const indexRef = useRef(-1);
-  const repeatRef = useRef<Repeat>('off');
-  const qualityRef = useRef<QualityId>('original');
+  const repeatRef = useRef<Repeat>("off");
   const progressRef = useRef({ position: 0, duration: 0 });
   const baseRef = useRef(0); // indice in coda del primo brano caricato nel player nativo
   const loadedEndRef = useRef(0); // indice in coda (escluso) dell'ultimo brano caricato
@@ -84,40 +85,80 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const lockActiveRef = useRef(false);
   const metaTokenRef = useRef(0);
   const notifAskedRef = useRef(false);
-  const reportedRef = useRef(false);
   const playIdRef = useRef(uuid());
-  const endedRef = useRef('');
+  const endedRef = useRef("");
   const installIdRef = useRef(uuid());
   const statusRef = useRef<(s: AudioPlaylistStatus) => void>(() => {});
   const changedRef = useRef<(e: { currentIndex: number }) => void>(() => {});
 
   repeatRef.current = repeat;
-  qualityRef.current = quality;
 
   const current: Track | undefined = queue[index];
 
-  /* ---------------------------- Helper interni ---------------------------- */
-
-  const sourceFor = (t: Track) => {
-    const q = QUALITIES[qualityRef.current];
-    const params = q.format ? { format: q.format, bitrate: q.bitrate } : undefined;
-    return { uri: api!.streamUrl(t.id, params), headers: api!.authHeaders(), name: t.title };
+  const setUserBlock = (start: number, end: number) => {
+    const r = end > start ? { start, end } : { start: 0, end: 0 };
+    userRangeRef.current = r;
+    setUserRange(r);
   };
 
+  /** Il brano `ni` è diventato quello corrente: aggiorna il blocco utente. */
+  const consumeUserBlock = (ni: number) => {
+    const { start, end } = userRangeRef.current;
+    if (end <= start) return;
+    if (ni >= end)
+      setUserBlock(0, 0); // saltato oltre il blocco
+    else if (ni >= start) setUserBlock(ni + 1, end); // sto suonando un brano utente
+    // ni < start (sono tornato indietro): il blocco resta com'è
+  };
+
+  /* ---------------------------- Helper interni ---------------------------- */
+
+  const sourceFor = (t: Track) => ({
+    uri: api!.mediaUrl(t.file),
+    headers: api!.authHeaders(),
+    name: t.title,
+  });
+
   const resetPlayState = () => {
-    reportedRef.current = false;
     playIdRef.current = uuid();
-    endedRef.current = '';
+    endedRef.current = "";
     progressRef.current = { position: 0, duration: 0 };
     setProgress(progressRef.current);
+  };
+
+  /**
+   * Il sistema scarica da solo la copertina dello schermo bloccato, senza header:
+   * la scarico io (con l'Authorization) in cache e gli passo il file locale.
+   */
+  const coverFileFor = async (track: Track): Promise<string | undefined> => {
+    if (!api || !track.has_cover) return undefined;
+    try {
+      const dest = new File(Paths.cache, `cover-${hashString(track.file)}.jpg`);
+      if (dest.exists) return dest.uri;
+      const f = await File.downloadFileAsync(
+        api.coverUrl(track.file, 600),
+        dest,
+        {
+          headers: api.authHeaders(),
+          idempotent: true,
+        },
+      );
+      return f.uri;
+    } catch {
+      return undefined;
+    }
   };
 
   /** Titolo/artista/copertina sullo schermo bloccato e nella notifica. */
   const applyMetadata = async (track: Track) => {
     const pl = plRef.current;
-    if (!pl || !api) return;
+    if (!pl) return;
     const token = ++metaTokenRef.current;
-    const meta = { title: track.title, artist: track.artist, albumTitle: track.album };
+    const meta = {
+      title: track.title,
+      artist: track.artist,
+      albumTitle: track.album,
+    };
     try {
       if (!lockActiveRef.current) {
         pl.setActiveForLockScreen(true, meta, LOCK_OPTIONS);
@@ -126,23 +167,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         pl.updateLockScreenMetadata(meta);
       }
     } catch {}
-    if (!track.has_cover) return;
-    try {
-      // il sistema scarica la copertina da solo, senza header: serve un URL firmato
-      const [artworkUrl] = await api.sign([{ path: `/api/v1/tracks/${track.id}/cover`, params: { size: '600' } }], 6 * 3600);
-      if (token === metaTokenRef.current) {
-        try {
-          pl.updateLockScreenMetadata({ ...meta, artworkUrl });
-        } catch {}
-      }
-    } catch {}
+    const artworkUrl = await coverFileFor(track);
+    if (artworkUrl && token === metaTokenRef.current) {
+      try {
+        pl.updateLockScreenMetadata({ ...meta, artworkUrl });
+      } catch {}
+    }
   };
 
   const maybeRefill = () => {
     const pl = plRef.current;
     const q = queueRef.current;
     if (!pl || !api) return;
-    if (loadedEndRef.current < q.length && loadedEndRef.current - indexRef.current < REFILL_AT) {
+    if (
+      loadedEndRef.current < q.length &&
+      loadedEndRef.current - indexRef.current < REFILL_AT
+    ) {
       const end = Math.min(q.length, loadedEndRef.current + CHUNK);
       for (let i = loadedEndRef.current; i < end; i++) pl.add(sourceFor(q[i]));
       loadedEndRef.current = end;
@@ -169,6 +209,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (!pl || !t) return;
     indexRef.current = qi;
     setIndex(qi);
+    consumeUserBlock(qi);
     resetPlayState();
     if (qi >= baseRef.current && qi < loadedEndRef.current) {
       suppressUntilRef.current = Date.now() + 600;
@@ -193,18 +234,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     progressRef.current = { position: pos, duration: dur };
     setProgress(progressRef.current);
 
-    // Ascolto valido: metà del brano (o 4 minuti), come il player web
-    if (api && cur && !reportedRef.current && s.playing && dur > 0 && pos >= Math.min(dur / 2, 240)) {
-      reportedRef.current = true;
-      api.reportListen(cur.id, playIdRef.current).catch(() => {
-        reportedRef.current = false;
-      });
-    }
-
     // Fine coda con "ripeti tutto": si riparte dal primo brano
     if (s.didJustFinish && endedRef.current !== playIdRef.current) {
       endedRef.current = playIdRef.current;
-      if (indexRef.current === queueRef.current.length - 1 && repeatRef.current === 'all') goTo(0);
+      if (
+        indexRef.current === queueRef.current.length - 1 &&
+        repeatRef.current === "all"
+      )
+        goTo(0);
     }
   };
 
@@ -217,6 +254,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (!t) return;
     indexRef.current = qi;
     setIndex(qi);
+    consumeUserBlock(qi);
     resetPlayState();
     applyMetadata(t);
     maybeRefill();
@@ -224,14 +262,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // 'doNotMix' è richiesto perché il sistema associ i controlli dello schermo bloccato all'app
-    setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' }).catch(() => {});
-    const pl = createAudioPlaylist({ sources: [], loop: 'none' });
+    setAudioModeAsync({
+      playsInSilentMode: true,
+      shouldPlayInBackground: true,
+      interruptionMode: "doNotMix",
+    }).catch(() => {});
+    const pl = createAudioPlaylist({ sources: [], loop: "none" });
     plRef.current = pl;
-    const s1 = pl.addListener('playlistStatusUpdate', (s: AudioPlaylistStatus) => statusRef.current(s));
-    const s2 = pl.addListener('trackChanged', (e: { currentIndex: number }) => changedRef.current(e));
-    AsyncStorage.getItem(QUALITY_KEY)
-      .then((v) => v && v in QUALITIES && setQualityState(v as QualityId))
-      .catch(() => {});
+    const s1 = pl.addListener(
+      "playlistStatusUpdate",
+      (s: AudioPlaylistStatus) => statusRef.current(s),
+    );
+    const s2 = pl.addListener("trackChanged", (e: { currentIndex: number }) =>
+      changedRef.current(e),
+    );
     return () => {
       s1.remove();
       s2.remove();
@@ -249,7 +293,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const pl = plRef.current;
     if (!pl) return;
     try {
-      pl.loop = repeat === 'one' ? 'single' : 'none';
+      pl.loop = repeat === "one" ? "single" : "none";
     } catch {}
   }, [repeat]);
 
@@ -257,12 +301,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!api || !current) return;
     const send = () =>
-      api.reportPlayback(installIdRef.current, playing ? 'playing' : 'paused', current, progressRef.current.position).catch(() => {});
+      api
+        .reportPlayback(
+          installIdRef.current,
+          playing ? "playing" : "paused",
+          current,
+          progressRef.current.position,
+        )
+        .catch(() => {});
     send();
     if (!playing) return;
     const t = setInterval(send, 30000);
     return () => clearInterval(t);
-  }, [api, current?.id, playing]);
+  }, [api, current?.file, playing]);
 
   /* ---------------------------- Comandi pubblici (stabili) ---------------------------- */
 
@@ -271,29 +322,46 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     next: () => {},
     prev: () => {},
     enqueue: (_t: Track) => {},
-    playNext: (_t: Track) => {},
   });
 
   impl.current = {
     play: (tracks, startIndex) => {
       if (!tracks.length) return;
-      if (Platform.OS === 'android' && !notifAskedRef.current) {
-        // Android 13+: senza permesso la notifica con i controlli non compare
+      if (Platform.OS === "android" && !notifAskedRef.current) {
         notifAskedRef.current = true;
         requestNotificationPermissionsAsync().catch(() => {});
       }
-      queueRef.current = tracks;
-      setQueue(tracks);
+      const start = Math.min(Math.max(startIndex, 0), tracks.length - 1);
+
+      // I brani aggiunti dall'utente e non ancora suonati sopravvivono al cambio di contesto (come Spotify).
+      // Per azzerarli sempre, metti `const pending: Track[] = [];`
+      const { start: us, end: ue } = userRangeRef.current;
+      const pending =
+        ue > us
+          ? queueRef.current.slice(Math.max(us, indexRef.current + 1), ue)
+          : [];
+
+      const nq = pending.length
+        ? [
+            ...tracks.slice(0, start + 1),
+            ...pending,
+            ...tracks.slice(start + 1),
+          ]
+        : tracks;
+
+      queueRef.current = nq;
+      setQueue(nq);
+      setUserBlock(start + 1, start + 1 + pending.length);
       baseRef.current = 0;
       loadedEndRef.current = 0; // forza il ricaricamento della finestra
-      goTo(Math.min(Math.max(startIndex, 0), tracks.length - 1));
+      goTo(start);
     },
     next: () => {
       const len = queueRef.current.length;
       if (!len) return;
       const ni = indexRef.current + 1;
       if (ni < len) goTo(ni);
-      else if (repeatRef.current === 'all') goTo(0);
+      else if (repeatRef.current === "all") goTo(0);
       else {
         plRef.current?.pause();
         plRef.current?.seekTo(0);
@@ -301,39 +369,46 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     },
     prev: () => {
       if (!queueRef.current.length) return;
-      if (progressRef.current.position > 3 || indexRef.current <= 0) plRef.current?.seekTo(0);
+      if (progressRef.current.position > 3 || indexRef.current <= 0)
+        plRef.current?.seekTo(0);
       else goTo(indexRef.current - 1);
     },
     enqueue: (t) => {
       const pl = plRef.current;
       if (!queueRef.current.length || !pl) return impl.current.play([t], 0);
-      const wasAtEnd = loadedEndRef.current === queueRef.current.length;
-      const nq = [...queueRef.current, t];
+
+      const { start, end } = userRangeRef.current;
+      const empty = end <= start;
+      const p = empty ? indexRef.current + 1 : end; // dopo l'ultimo brano utente
+
+      const nq = [...queueRef.current];
+      nq.splice(p, 0, t);
       queueRef.current = nq;
       setQueue(nq);
-      if (wasAtEnd) {
-        pl.add(sourceFor(t));
-        loadedEndRef.current = nq.length;
+      setUserBlock(empty ? p : start, p + 1);
+
+      if (p < loadedEndRef.current) {
+        // Niente pl.insert: ricrea solo la coda dopo `p`, il brano corrente non viene toccato
+        const newEnd = loadedEndRef.current + 1;
+        suppressUntilRef.current = Date.now() + 600; // ignora eventuali trackChanged spuri
+        for (let i = loadedEndRef.current - 1; i >= p; i--) {
+          pl.remove(i - baseRef.current); // dal fondo, così gli indici non scalano
+        }
+        for (let i = p; i < newEnd; i++) pl.add(sourceFor(nq[i]));
+        loadedEndRef.current = newEnd;
+      } else {
+        maybeRefill();
       }
-    },
-    playNext: (t) => {
-      const pl = plRef.current;
-      if (!queueRef.current.length || !pl) return impl.current.play([t], 0);
-      const at = indexRef.current + 1;
-      const nq = queueRef.current.slice();
-      nq.splice(at, 0, t);
-      queueRef.current = nq;
-      setQueue(nq);
-      pl.insert(sourceFor(t), at - baseRef.current);
-      loadedEndRef.current += 1;
     },
   };
 
-  const play = useCallback((tracks: Track[], startIndex = 0) => impl.current.play(tracks, startIndex), []);
+  const play = useCallback(
+    (tracks: Track[], startIndex = 0) => impl.current.play(tracks, startIndex),
+    [],
+  );
   const next = useCallback(() => impl.current.next(), []);
   const prev = useCallback(() => impl.current.prev(), []);
   const enqueue = useCallback((t: Track) => impl.current.enqueue(t), []);
-  const playNext = useCallback((t: Track) => impl.current.playNext(t), []);
 
   const toggle = useCallback(() => {
     const pl = plRef.current;
@@ -350,16 +425,56 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     plRef.current?.seekTo(s);
   }, []);
 
-  const cycleRepeat = useCallback(() => setRepeat((r) => (r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')), []);
+  const cycleRepeat = useCallback(
+    () => setRepeat((r) => (r === "off" ? "all" : r === "all" ? "one" : "off")),
+    [],
+  );
 
-  const setQuality = useCallback((q: QualityId) => {
-    setQualityState(q);
-    AsyncStorage.setItem(QUALITY_KEY, q).catch(() => {});
-  }, []);
+  const userQueue = useMemo(() => {
+    const s = Math.max(userRange.start, index + 1);
+    return userRange.end > s ? queue.slice(s, userRange.end) : [];
+  }, [queue, index, userRange]);
+
+  const contextQueue = useMemo(
+    () => queue.slice(Math.max(index + 1, userRange.end)),
+    [queue, index, userRange],
+  );
 
   const value = useMemo<PlayerApi>(
-    () => ({ queue, index, current, playing, buffering, repeat, quality, play, toggle, next, prev, seek, enqueue, playNext, cycleRepeat, setQuality }),
-    [queue, index, current, playing, buffering, repeat, quality, play, toggle, next, prev, seek, enqueue, playNext, cycleRepeat, setQuality],
+    () => ({
+      queue,
+      userQueue,
+      contextQueue,
+      index,
+      current,
+      playing,
+      buffering,
+      repeat,
+      play,
+      toggle,
+      next,
+      prev,
+      seek,
+      enqueue,
+      cycleRepeat,
+    }),
+    [
+      queue,
+      userQueue,
+      contextQueue,
+      index,
+      current,
+      playing,
+      buffering,
+      repeat,
+      play,
+      toggle,
+      next,
+      prev,
+      seek,
+      enqueue,
+      cycleRepeat,
+    ],
   );
 
   return (
@@ -371,7 +486,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
 export function usePlayer(): PlayerApi {
   const v = useContext(PlayerCtx);
-  if (!v) throw new Error('usePlayer fuori da PlayerProvider');
+  if (!v) throw new Error("usePlayer fuori da PlayerProvider");
   return v;
 }
 
