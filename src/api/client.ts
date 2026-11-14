@@ -2,7 +2,6 @@ import { Platform } from "react-native";
 import { encodePath } from "../utils";
 
 /* ------------------------------- Tipi ------------------------------- */
-
 export interface ServerInfo {
   server_id: string;
   name: string;
@@ -23,8 +22,11 @@ export interface AuthResult {
   user: UserInfo;
 }
 
-/** Riga di `GET /tracks`. Non esiste un id: un brano è identificato dal percorso `file`. */
+/** Riga di `GET /tracks`. Dopo il merge con /api/v1/library contiene anche gli id. */
 export interface Track {
+  id?: string; // da /api/v1/library (assente se il file non è nel feed)
+  album_id?: string;
+  artist_id?: string;
   file: string;
   title: string;
   artist: string;
@@ -44,6 +46,39 @@ export interface Track {
   added?: number;
   size?: number;
   playlists?: string[];
+  hidden_by?: "track" | "album" | "artist";
+}
+
+/** Traccia come restituita da `GET /api/v1/library`. */
+export interface LibraryFeedTrack {
+  id: string;
+  file: string;
+  title: string;
+  artist: string;
+  artists?: string[];
+  album: string;
+  album_artist?: string;
+  album_id: string;
+  artist_id: string;
+  track_number?: number;
+  year?: string;
+  duration: number;
+  codec?: string;
+  bitrate?: number;
+  sample_rate?: number;
+  channels?: number;
+  size?: number;
+  added?: number;
+  has_cover?: boolean;
+  explicit?: boolean;
+  playlists?: string[];
+}
+
+export interface LibraryFeed {
+  cursor: number;
+  full: boolean;
+  tracks: LibraryFeedTrack[];
+  deleted: string[];
 }
 
 /** Riga di `GET /playlists`. `files` è nell'ordine della playlist e può ripetere un brano. */
@@ -292,10 +327,43 @@ export class DowntifyApi {
     return (text ? JSON.parse(text) : undefined) as T;
   }
 
-  /* --- URL di file (audio e immagini; vanno con l'header Authorization) --- */
+  /* --- URL di file (audio vanno con l'header Authorization) --- */
   mediaUrl(file: string) {
     return `${this.baseUrl}/downloads/${encodePath(file)}`;
   }
+
+  /**
+   * GET /api/v1/tracks/{id}/stream — supporta Range (206) e HEAD.
+   * format: original (default) | opus | aac | mp3
+   * bitrate: kbps, solo per i formati transcodificati (96..320, default 160)
+   * download: aggiunge Content-Disposition: attachment (copia offline)
+   */
+  streamUrl(
+    id: string,
+    opts: {
+      format?: "original" | "opus" | "aac" | "mp3";
+      bitrate?: 96 | 128 | 160 | 192 | 256 | 320;
+      download?: boolean;
+    } = {},
+  ) {
+    const transcoded = !!opts.format && opts.format !== "original";
+    return `${this.baseUrl}/api/v1/tracks/${encodeURIComponent(id)}/stream${qs({
+      format: transcoded ? opts.format : undefined,
+      bitrate: transcoded ? opts.bitrate : undefined,
+      download: opts.download ? "true" : undefined,
+    })}`;
+  }
+
+  /** URL audio di un brano: per id se presente, altrimenti per percorso. */
+  trackStreamUrl(
+    track: Track,
+    opts: Parameters<DowntifyApi["streamUrl"]>[1] = {},
+  ) {
+    return track.id
+      ? this.streamUrl(track.id, opts)
+      : this.mediaUrl(track.file);
+  }
+
   coverUrl(file: string, size: 150 | 300 | 600 = 300) {
     return `${this.baseUrl}/cover${qs({ file, size })}`;
   }
@@ -310,6 +378,37 @@ export class DowntifyApi {
   tracks() {
     return this.request<Track[]>("/tracks", { timeoutMs: 120000 });
   }
+
+  /** Change feed della libreria (porta gli id). since=0 → tutta la libreria. */
+  libraryFeed(since = 0, refresh = false) {
+    return this.request<LibraryFeed>("/api/v1/library", {
+      query: { since, refresh: refresh ? "true" : undefined },
+      timeoutMs: 120000,
+    });
+  }
+
+  /**
+   * Risultato di GET /tracks + id/album_id/artist_id presi da GET /api/v1/library,
+   * abbinati per `file`. Le due chiamate partono in parallelo.
+   * I brani senza corrispondenza nel feed restano senza id.
+   */
+  async tracksWithIds(refresh = false): Promise<Track[]> {
+    const [tracks, feed] = await Promise.all([
+      this.tracks(),
+      this.libraryFeed(0, refresh),
+    ]);
+
+    const byFile = new Map<string, LibraryFeedTrack>();
+    for (const t of feed.tracks) byFile.set(t.file, t);
+
+    return tracks.map((t) => {
+      const f = byFile.get(t.file);
+      return f
+        ? { ...t, id: f.id, album_id: f.album_id, artist_id: f.artist_id }
+        : t;
+    });
+  }
+
   /** Scarta la cache del server e riscansiona la cartella (pull to refresh). */
   rescan() {
     return this.request<string[]>("/list", {
@@ -405,7 +504,7 @@ export class DowntifyApi {
         position,
         track: track
           ? {
-              track_id: track.file,
+              track_id: track.id ?? track.file,
               title: track.title,
               artist: track.artist,
               album: track.album,

@@ -1,8 +1,16 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState } from 'react-native';
-import { Playlist, QueueJob, Track, errorMessage } from '../api/client';
-import { norm, uuid } from '../utils';
-import { useSession } from './session';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { AppState } from "react-native";
+import { Playlist, QueueJob, Track, errorMessage } from "../api/client";
+import { norm, uuid } from "../utils";
+import { useSession } from "./session";
 
 export interface AlbumGroup {
   key: string;
@@ -41,13 +49,13 @@ interface DataCtx {
 
 const Ctx = createContext<DataCtx | null>(null);
 
-const VARIOUS = 'various artists';
+const VARIOUS = "various artists";
 
 /** Artista sotto cui la libreria raggruppa un brano (stessa logica della pagina web). */
 function groupArtist(t: Track): string {
   const aa = t.album_artist?.trim();
   if (aa && !(aa.toLowerCase() === VARIOUS && !t.compilation)) return aa;
-  return t.artists?.[0] || t.artist || 'Sconosciuto';
+  return t.artists?.[0] || t.artist || "Sconosciuto";
 }
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
@@ -73,9 +81,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   /* ------------------------------ Caricamenti ------------------------------ */
 
-  const syncRef = useRef<DataCtx['sync']>(async () => {});
+  const syncRef = useRef<DataCtx["sync"]>(async () => {});
 
-  const sync = useCallback<DataCtx['sync']>(
+  const sync = useCallback<DataCtx["sync"]>(
     async (opts = {}) => {
       if (!api) return;
       if (lock.current) {
@@ -87,7 +95,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setError(undefined);
       try {
         if (opts.rescan) await api.rescan().catch(() => {});
-        setTracks(await api.tracks());
+        setTracks(await api.tracksWithIds(opts.rescan));
         lastSync.current = Date.now();
       } catch (e) {
         setError(errorMessage(e));
@@ -138,8 +146,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   // Il WebSocket muore in background: al ritorno in primo piano si riallinea tutto
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active' && api && Date.now() - lastSync.current > 60000) refreshAll();
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active" && api && Date.now() - lastSync.current > 60000)
+        refreshAll();
     });
     return () => sub.remove();
   }, [api, refreshAll]);
@@ -150,11 +159,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     async (file: string) => {
       if (!api) return;
       const liked = !likesRef.current.has(file);
-      setLikeFiles((prev) => (liked ? [file, ...prev.filter((f) => f !== file)] : prev.filter((f) => f !== file)));
+      setLikeFiles((prev) =>
+        liked
+          ? [file, ...prev.filter((f) => f !== file)]
+          : prev.filter((f) => f !== file),
+      );
       try {
         await api.setLike(file, liked);
       } catch {
-        setLikeFiles((prev) => (liked ? prev.filter((f) => f !== file) : [file, ...prev]));
+        setLikeFiles((prev) =>
+          liked ? prev.filter((f) => f !== file) : [file, ...prev],
+        );
       }
     },
     [api],
@@ -165,15 +180,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const handlerRef = useRef<(m: any) => void>(() => {});
   handlerRef.current = (m: any) => {
     switch (m?.type) {
-      case 'library_changed':
+      case "library_changed":
         sync();
         break;
-      case 'playlists_changed':
-      case 'likes':
+      case "playlists_changed":
+      case "likes":
         refreshPlaylists();
         break;
-      case 'queue_reload':
-      case 'queue_state':
+      case "queue_reload":
+      case "queue_state":
         refreshQueue();
         break;
       case undefined: {
@@ -199,7 +214,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           };
           return next;
         });
-        if (m.status === 'done' || m.status === 'error') refreshQueue();
+        if (m.status === "done" || m.status === "error") refreshQueue();
         break;
       }
     }
@@ -215,7 +230,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     const connect = () => {
       try {
         // React Native accetta un terzo argomento con gli header dell'handshake
-        ws = new (WebSocket as any)(api.wsUrl(clientId), undefined, { headers: api.authHeaders() }) as WebSocket;
+        ws = new (WebSocket as any)(api.wsUrl(clientId), undefined, {
+          headers: api.authHeaders(),
+        }) as WebSocket;
       } catch {
         retry = setTimeout(connect, 5000);
         return;
@@ -245,7 +262,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   }, [api]);
 
   const activeDownloads = useMemo(
-    () => queue.filter((j) => j.status === 'queued' || j.status === 'downloading').length,
+    () =>
+      queue.filter((j) => j.status === "queued" || j.status === "downloading")
+        .length,
     [queue],
   );
 
@@ -258,23 +277,33 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   /* ------------------------------ Derivati ------------------------------ */
 
-  const sorted = useMemo(() => tracks.slice().sort((a, b) => (b.added ?? 0) - (a.added ?? 0)), [tracks]);
-  const byFile = useMemo(() => new Map(tracks.map((t) => [t.file, t])), [tracks]);
+  const sorted = useMemo(
+    () => tracks.slice().sort((a, b) => (b.added ?? 0) - (a.added ?? 0)),
+    [tracks],
+  );
+  const byFile = useMemo(
+    () => new Map(tracks.map((t) => [t.file, t])),
+    [tracks],
+  );
 
   const { albums, artists } = useMemo(() => {
     const albumMap = new Map<string, Track[]>();
     const artistMap = new Map<string, { name: string; list: Track[] }>();
     for (const t of tracks) {
       const ga = groupArtist(t);
-      const ak = `${norm(ga)}|${norm(t.album) || 'single'}`;
+      const ak = `${norm(ga)}|${norm(t.album) || "single"}`;
       (albumMap.get(ak) ?? albumMap.set(ak, []).get(ak)!).push(t);
       if (ga.toLowerCase() !== VARIOUS) {
         const rk = norm(ga);
-        (artistMap.get(rk) ?? artistMap.set(rk, { name: ga, list: [] }).get(rk)!).list.push(t);
+        (
+          artistMap.get(rk) ??
+          artistMap.set(rk, { name: ga, list: [] }).get(rk)!
+        ).list.push(t);
       }
     }
     const byNo = (a: Track, b: Track) =>
-      (a.track_number ?? 0) - (b.track_number ?? 0) || a.title.localeCompare(b.title);
+      (a.track_number ?? 0) - (b.track_number ?? 0) ||
+      a.title.localeCompare(b.title);
 
     const albums: AlbumGroup[] = [];
     albumMap.forEach((list, key) => {
@@ -282,7 +311,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const first = list[0];
       albums.push({
         key,
-        title: first.album || 'Singoli',
+        title: first.album || "Singoli",
         artist: groupArtist(first),
         year: first.year,
         files: list.map((t) => t.file),
@@ -312,9 +341,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     if (!likeFiles.length) return rest;
     const base = playlistRows.find((p) => p.liked);
     const liked: Playlist = {
-      name: 'Downtify Liked Songs',
+      name: "Downtify Liked Songs",
       manual: false,
-      cover: '',
+      cover: "",
       ...base,
       liked: true,
       files: likeFiles,
@@ -341,7 +370,23 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       refreshQueue,
       toggleLike,
     }),
-    [sorted, byFile, albums, artists, likes, playlists, queue, queuePaused, activeDownloads, syncing, error, sync, refreshPlaylists, refreshQueue, toggleLike],
+    [
+      sorted,
+      byFile,
+      albums,
+      artists,
+      likes,
+      playlists,
+      queue,
+      queuePaused,
+      activeDownloads,
+      syncing,
+      error,
+      sync,
+      refreshPlaylists,
+      refreshQueue,
+      toggleLike,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -349,6 +394,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
 export function useData(): DataCtx {
   const v = useContext(Ctx);
-  if (!v) throw new Error('useData fuori da DataProvider');
+  if (!v) throw new Error("useData fuori da DataProvider");
   return v;
 }

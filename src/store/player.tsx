@@ -114,7 +114,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   /* ---------------------------- Helper interni ---------------------------- */
 
   const sourceFor = (t: Track) => ({
-    uri: api!.mediaUrl(t.file),
+    uri: api!.trackStreamUrl(t),
     headers: api!.authHeaders(),
     name: t.title,
   });
