@@ -9,7 +9,7 @@ Uses **only the normal API** from the [API Reference](https://downtify.henriques
 ```bash
 npm install --legacy-peer-deps
 npx expo install --fix      # align react-native and other packages to Expo SDK version
-npx expo run:android        # or: npx expo run:ios  (development build)
+npx expo run:ios        # or: npx expo run:android  (development build)
 ```
 
 A **development build** is required — the background screen lock controls (`expo-audio`) are unreliable in Expo Go.
