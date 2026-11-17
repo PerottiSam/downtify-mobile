@@ -5,3 +5,4 @@ dist/
 ios/
 android/
 .DS_Store
+src/store/player_OLD.tsx
